@@ -75,6 +75,24 @@ jobs:
       - name: 汉化
         run: python localize.py --site site
 
+      # 站点靠 JS 在运行时拼出 wasm 路径，爬虫抓不到，必须显式补。
+      # 这个 wasm 在 deca 的公开仓库里，且与站点用的 deca_adf.js 是同一版本。
+      - name: 补齐缺失的 WASM
+        run: |
+          mkdir -p site/deca/lib
+          curl -sSL --fail --max-time 120 \
+            -o site/deca/lib/deca_adf.wasm \
+            https://raw.githubusercontent.com/kk49/deca/main/support/wasm/deca_adf.wasm
+          python -c "
+import sys
+d = open('site/deca/lib/deca_adf.wasm','rb').read()
+assert d[:4] == b'\x00asm', '不是合法的 wasm'
+print('wasm OK:', len(d), 'bytes')
+"
+
+      - name: 加「选择存档文件夹」按钮
+        run: python patch_saveload.py --site site
+
       - name: 汇总
         if: always()
         run: |
