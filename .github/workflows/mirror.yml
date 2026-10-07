@@ -1,19 +1,21 @@
 name: mirror-deca-map
 
-# 在 GitHub 的服务器上抓取 mathartbang 的地图站，再把结果发布成可下载的文件。
-# 触发方式：push 到 main，或者在 Actions 页面手动点 "Run workflow"。
+# 在 GitHub 的服务器上抓取 mathartbang 的 theHunter:COTW 地图站。
+#
+# 站点结构（从 map.html 里分析出来的）：
+#   /deca/hp/index.html, map.html, tool/save.html
+#   /deca/hp/data/<保护区>/{reserve,pois,layers}.json
+#   保护区列表写死在 map.html 里：
+#     r0 r1 r2 r3 r4 r6 r8 r9 r10 r11 r12 r13 r14 r16 r17 r18 r19 r20 r21
+# 一共 3 + 19*3 = 60 个文件，没有图片或瓦片。
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
-      prefix:
-        description: '只抓该路径前缀'
-        required: false
-        default: '/deca/hp/'
       args:
-        description: '额外传给 mirror_site.py 的参数（例如 --dry-run）'
+        description: '额外传给 mirror_site.py 的参数'
         required: false
         default: ''
 
@@ -32,43 +34,40 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 环境自检
-        run: |
-          echo "python  : $(python -V 2>&1)"
-          echo "locale  : $(locale 2>&1 | head -3 | tr '\n' ' ')"
-          echo "仓库文件: $(ls -1 | tr '\n' ' ')"
-
       - name: 连通性自检
         run: |
-          echo "=== HTTP 状态 ==="
-          curl -sS -o /dev/null -w "status=%{http_code} redirect=%{redirect_url}\n" \
+          curl -sS -o /dev/null -w "map.html -> status=%{http_code}\n" \
             --max-time 30 https://www.mathartbang.com/deca/hp/map.html || true
-          echo "=== 响应头 ==="
-          curl -sSI --max-time 30 https://www.mathartbang.com/deca/hp/map.html | head -20 || true
-          echo "=== 正文前 300 字节 ==="
-          curl -sS --max-time 30 https://www.mathartbang.com/deca/hp/map.html | head -c 300 || true
-          echo
+          curl -sS -o /dev/null -w "data/r0  -> status=%{http_code}\n" \
+            --max-time 30 https://www.mathartbang.com/deca/hp/data/r0/reserve.json || true
 
-      # continue-on-error：脚本只要有 URL 抓不到就会返回退出码 2，
-      # 那不该让整条流水线挂掉、把已经下好的文件全丢掉。
       - name: 开始镜像
         id: mirror
         continue-on-error: true
         run: |
           set +e
+          BASE="https://www.mathartbang.com"
+          SEEDS="$BASE/deca/hp/index.html $BASE/deca/hp/map.html $BASE/deca/hp/tool/save.html"
+          for r in r0 r1 r2 r3 r4 r6 r8 r9 r10 r11 r12 r13 r14 r16 r17 r18 r19 r20 r21; do
+            for f in reserve pois layers; do
+              SEEDS="$SEEDS $BASE/deca/hp/data/$r/$f.json"
+            done
+          done
+          echo "种子 URL 数量: $(echo $SEEDS | wc -w)"
           python -u mirror_site.py \
             --out site \
-            --prefix "${{ github.event.inputs.prefix || '/deca/hp/' }}" \
-            --report report.json 2>&1 | tee mirror.log
+            --prefix /deca/hp/ \
+            --seeds $SEEDS \
+            --report report.json ${{ github.event.inputs.args }} 2>&1 | tee mirror.log
           echo "mirror_exit=${PIPESTATUS[0]}" | tee -a mirror.log
 
       - name: 汇总与诊断
         if: always()
         run: |
           {
-            echo "### 镜像脚本输出（尾部 120 行）"
+            echo "### 镜像脚本输出（尾部 150 行）"
             echo '```'
-            tail -120 mirror.log 2>/dev/null || echo "(没有 mirror.log)"
+            tail -150 mirror.log 2>/dev/null || echo "(没有 mirror.log)"
             echo
             echo '```'
             echo "### 抓取结果"
@@ -76,9 +75,9 @@ jobs:
             du -sh site 2>/dev/null || echo "(没有 site 目录)"
             echo "文件数: $(find site -type f 2>/dev/null | wc -l)"
             echo '```'
-            echo "### 最大的 20 个文件"
+            echo "### 每个文件的大小"
             echo '```'
-            find site -type f -printf '%s\t%p\n' 2>/dev/null | sort -rn | head -20
+            find site -type f -printf '%10s  %p\n' 2>/dev/null | sort -k2
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -110,4 +109,4 @@ jobs:
           TAG="mirror-${{ github.run_number }}"
           gh release create "$TAG" site.zip \
             --title "deca map mirror #${{ github.run_number }}" \
-            --notes "自动抓取的静态镜像（${{ steps.pack.outputs.size }}）。下载 site.zip 解压后，用 python -m http.server 8000 --directory site 起服务。"
+            --notes "theHunter:COTW 地图站的静态镜像（${{ steps.pack.outputs.size }}）。解压后用 python -m http.server 8000 --directory site 起服务，打开 http://localhost:8000/deca/hp/map.html"
