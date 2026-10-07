@@ -1,0 +1,87 @@
+name: mirror-deca-map
+
+# 在 GitHub 的服务器上抓取 mathartbang 的地图站，再把结果发布成可下载的文件。
+# 触发方式：push 到 main，或者在 Actions 页面手动点 "Run workflow"。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      prefix:
+        description: '只抓该路径前缀'
+        required: false
+        default: '/deca/hp/'
+      args:
+        description: '额外传给 mirror_site.py 的参数（例如 --dry-run）'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 连通性自检
+        run: |
+          curl -s -o /dev/null -w "map.html -> %{http_code}\n" --max-time 30 \
+            https://www.mathartbang.com/deca/hp/map.html
+
+      - name: 开始镜像
+        run: |
+          python mirror_site.py \
+            --out site \
+            --prefix "${{ github.event.inputs.prefix || '/deca/hp/' }}" \
+            --report report.json \
+            ${{ github.event.inputs.args }}
+
+      - name: 体积统计
+        if: always()
+        run: |
+          echo "### 抓取结果" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          du -sh site 2>/dev/null || echo "(没有 site 目录)"
+          echo "文件数: $(find site -type f 2>/dev/null | wc -l)" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "最大的 20 个文件:" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          find site -type f -printf '%s\t%p\n' 2>/dev/null | sort -rn | head -20 >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 保留报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report
+          path: report.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+      # 体积大时 artifact 会超限，所以主通道走 Release 资产（单文件上限 2 GB）
+      - name: 打包
+        id: pack
+        if: hashFiles('site/**') != ''
+        run: |
+          zip -qr site.zip site
+          ls -lh site.zip
+          echo "size=$(du -h site.zip | cut -f1)" >> "$GITHUB_OUTPUT"
+
+      - name: 发布到 Release
+        if: steps.pack.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="mirror-${{ github.run_number }}"
+          gh release create "$TAG" site.zip \
+            --title "deca map mirror #${{ github.run_number }}" \
+            --notes "自动抓取的静态镜像（${{ steps.pack.outputs.size }}）。下载 site.zip 解压后，用 python -m http.server 8000 --directory site 起服务。"
