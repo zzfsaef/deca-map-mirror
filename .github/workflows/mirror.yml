@@ -83,12 +83,13 @@ jobs:
           curl -sSL --fail --max-time 120 \
             -o site/deca/lib/deca_adf.wasm \
             https://raw.githubusercontent.com/kk49/deca/main/support/wasm/deca_adf.wasm
-          python -c "
-import sys
-d = open('site/deca/lib/deca_adf.wasm','rb').read()
-assert d[:4] == b'\x00asm', '不是合法的 wasm'
-print('wasm OK:', len(d), 'bytes')
-"
+          python - <<'PY'
+          import os
+          p = 'site/deca/lib/deca_adf.wasm'
+          d = open(p, 'rb').read()
+          assert d[:4] == b'\x00asm', 'not a wasm'
+          print('wasm OK:', len(d), 'bytes')
+          PY
 
       - name: 加「选择存档文件夹」按钮
         run: python patch_saveload.py --site site
