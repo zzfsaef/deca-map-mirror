@@ -1,23 +1,20 @@
 name: mirror-deca-map
 
-# 在 GitHub 的服务器上抓取 mathartbang 的 theHunter:COTW 地图站。
+# 分两遍抓 mathartbang 地图站，然后汉化，最后打包发布。
 #
-# 站点结构（从 map.html 里分析出来的）：
-#   /deca/hp/index.html, map.html, tool/save.html
-#   /deca/hp/data/<保护区>/{reserve,pois,layers}.json
-#   保护区列表写死在 map.html 里：
-#     r0 r1 r2 r3 r4 r6 r8 r9 r10 r11 r12 r13 r14 r16 r17 r18 r19 r20 r21
-# 一共 3 + 19*3 = 60 个文件，没有图片或瓦片。
+#   第一遍：3 个页面 + 19×3 个 JSON + /deca/lib/（从页面里自动发现）
+#   第二遍：指定保护区的底图瓦片 + 动物热力图（清单由 gen_urls.py 从 layers.json 生成）
+#   最后  ：localize.py 把界面文字换成中文（只改显示文字，不动 id / url 等程序字段）
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
     inputs:
-      args:
-        description: '额外传给 mirror_site.py 的参数'
+      reserves:
+        description: '要下图片的保护区，空格分隔（r6=育空河谷）'
         required: false
-        default: ''
+        default: 'r6'
 
 permissions:
   contents: write
@@ -34,65 +31,65 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: 连通性自检
+      - name: 生成第一遍清单
         run: |
-          curl -sS -o /dev/null -w "map.html -> status=%{http_code}\n" \
-            --max-time 30 https://www.mathartbang.com/deca/hp/map.html || true
-          curl -sS -o /dev/null -w "data/r0  -> status=%{http_code}\n" \
-            --max-time 30 https://www.mathartbang.com/deca/hp/data/r0/reserve.json || true
-
-      - name: 开始镜像
-        id: mirror
-        continue-on-error: true
-        run: |
-          set +e
-          BASE="https://www.mathartbang.com"
-          SEEDS="$BASE/deca/hp/index.html $BASE/deca/hp/map.html $BASE/deca/hp/tool/save.html"
+          BASE=https://www.mathartbang.com
+          : > bootstrap.txt
+          for f in index.html map.html tool/save.html; do
+            echo "$BASE/deca/hp/$f" >> bootstrap.txt
+          done
           for r in r0 r1 r2 r3 r4 r6 r8 r9 r10 r11 r12 r13 r14 r16 r17 r18 r19 r20 r21; do
             for f in reserve pois layers; do
-              SEEDS="$SEEDS $BASE/deca/hp/data/$r/$f.json"
+              echo "$BASE/deca/hp/data/$r/$f.json" >> bootstrap.txt
             done
           done
-          echo "种子 URL 数量: $(echo $SEEDS | wc -w)"
-          python -u mirror_site.py \
-            --out site \
-            --prefix /deca/hp/ \
-            --seeds $SEEDS \
-            --report report.json ${{ github.event.inputs.args }} 2>&1 | tee mirror.log
-          echo "mirror_exit=${PIPESTATUS[0]}" | tee -a mirror.log
+          echo "第一遍 URL 数: $(wc -l < bootstrap.txt)"
+          python -u -c "import sys; print('python', sys.version)"
 
-      - name: 汇总与诊断
+      # --skip-prefix：不从页面里跟 data/ 下的链接（图片留给第二遍按清单抓），
+      # 但 /deca/lib/ 会被自动发现并抓下来。注意 skip 只作用于「发现的链接」，
+      # 不影响上面明确列出的起始 URL。
+      - name: 第一遍 — 框架 + lib/
+        continue-on-error: true
+        run: |
+          python -u mirror_site.py --out site --prefix /deca/ \
+            --skip-prefix /deca/hp/data/ \
+            --seeds-file bootstrap.txt --jobs 8 \
+            --report report1.json 2>&1 | tee pass1.log
+
+      - name: 生成第二遍清单
+        run: |
+          RESERVES="${{ github.event.inputs.reserves }}"
+          [ -z "$RESERVES" ] && RESERVES="r6"
+          echo "目标保护区: $RESERVES"
+          python gen_urls.py --site site --reserves $RESERVES > assets.txt
+          echo "第二遍 URL 数: $(wc -l < assets.txt)"
+
+      - name: 第二遍 — 底图 + 热力图
+        continue-on-error: true
+        run: |
+          python -u mirror_site.py --out site --prefix /deca/ \
+            --seeds-file assets.txt --jobs 8 \
+            --report report2.json 2>&1 | tee pass2.log
+
+      - name: 汉化
+        run: python localize.py --site site
+
+      - name: 汇总
         if: always()
         run: |
           {
-            echo "### 镜像脚本输出（尾部 150 行）"
+            echo "### 结果"
             echo '```'
-            tail -150 mirror.log 2>/dev/null || echo "(没有 mirror.log)"
-            echo
-            echo '```'
-            echo "### 抓取结果"
-            echo '```'
+            echo "文件总数: $(find site -type f 2>/dev/null | wc -l)"
             du -sh site 2>/dev/null || echo "(没有 site 目录)"
-            echo "文件数: $(find site -type f 2>/dev/null | wc -l)"
             echo '```'
-            echo "### 每个文件的大小"
+            echo "### 第二遍日志尾部"
             echo '```'
-            find site -type f -printf '%10s  %p\n' 2>/dev/null | sort -k2
+            tail -45 pass2.log 2>/dev/null || echo "(没有 pass2.log)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 保留报告与日志
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: report
-          path: |
-            report.json
-            mirror.log
-          if-no-files-found: ignore
-          retention-days: 30
-
-      # 体积大时 artifact 会超限，所以主通道走 Release 资产（单文件上限 2 GB）
       - name: 打包
         id: pack
         if: hashFiles('site/**') != ''
@@ -109,4 +106,4 @@ jobs:
           TAG="mirror-${{ github.run_number }}"
           gh release create "$TAG" site.zip \
             --title "deca map mirror #${{ github.run_number }}" \
-            --notes "theHunter:COTW 地图站的静态镜像（${{ steps.pack.outputs.size }}）。解压后用 python -m http.server 8000 --directory site 起服务，打开 http://localhost:8000/deca/hp/map.html"
+            --notes "中文界面版。解压后：python -m http.server 8000 --directory site，然后打开 http://localhost:8000/deca/hp/map.html"
