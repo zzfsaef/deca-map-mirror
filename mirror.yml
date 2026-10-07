@@ -1,4 +1,4 @@
-name: mirror-deca-map
+name: .github/workflows/mirror.yml
 
 # 在 GitHub 的服务器上抓取 mathartbang 的地图站，再把结果发布成可下载的文件。
 # 触发方式：push 到 main，或者在 Actions 页面手动点 "Run workflow"。
