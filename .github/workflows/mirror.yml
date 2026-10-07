@@ -32,38 +32,64 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: 环境自检
+        run: |
+          echo "python  : $(python -V 2>&1)"
+          echo "locale  : $(locale 2>&1 | head -3 | tr '\n' ' ')"
+          echo "仓库文件: $(ls -1 | tr '\n' ' ')"
+
       - name: 连通性自检
         run: |
-          curl -s -o /dev/null -w "map.html -> %{http_code}\n" --max-time 30 \
-            https://www.mathartbang.com/deca/hp/map.html
+          echo "=== HTTP 状态 ==="
+          curl -sS -o /dev/null -w "status=%{http_code} redirect=%{redirect_url}\n" \
+            --max-time 30 https://www.mathartbang.com/deca/hp/map.html || true
+          echo "=== 响应头 ==="
+          curl -sSI --max-time 30 https://www.mathartbang.com/deca/hp/map.html | head -20 || true
+          echo "=== 正文前 300 字节 ==="
+          curl -sS --max-time 30 https://www.mathartbang.com/deca/hp/map.html | head -c 300 || true
+          echo
 
+      # continue-on-error：脚本只要有 URL 抓不到就会返回退出码 2，
+      # 那不该让整条流水线挂掉、把已经下好的文件全丢掉。
       - name: 开始镜像
+        id: mirror
+        continue-on-error: true
         run: |
-          python mirror_site.py \
+          set +e
+          python -u mirror_site.py \
             --out site \
             --prefix "${{ github.event.inputs.prefix || '/deca/hp/' }}" \
-            --report report.json \
-            ${{ github.event.inputs.args }}
+            --report report.json 2>&1 | tee mirror.log
+          echo "mirror_exit=${PIPESTATUS[0]}" | tee -a mirror.log
 
-      - name: 体积统计
+      - name: 汇总与诊断
         if: always()
         run: |
-          echo "### 抓取结果" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          du -sh site 2>/dev/null || echo "(没有 site 目录)"
-          echo "文件数: $(find site -type f 2>/dev/null | wc -l)" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "最大的 20 个文件:" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          find site -type f -printf '%s\t%p\n' 2>/dev/null | sort -rn | head -20 >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "### 镜像脚本输出（尾部 120 行）"
+            echo '```'
+            tail -120 mirror.log 2>/dev/null || echo "(没有 mirror.log)"
+            echo
+            echo '```'
+            echo "### 抓取结果"
+            echo '```'
+            du -sh site 2>/dev/null || echo "(没有 site 目录)"
+            echo "文件数: $(find site -type f 2>/dev/null | wc -l)"
+            echo '```'
+            echo "### 最大的 20 个文件"
+            echo '```'
+            find site -type f -printf '%s\t%p\n' 2>/dev/null | sort -rn | head -20
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: 保留报告
+      - name: 保留报告与日志
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: report
-          path: report.json
+          path: |
+            report.json
+            mirror.log
           if-no-files-found: ignore
           retention-days: 30
 
